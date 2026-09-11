@@ -1,17 +1,23 @@
-class Empleado:
-    """Un empleado de EcoTech. Registra su tiempo en proyectos."""
 
-    def __init__(self, rut, nombre, fecha_ingreso, sueldo_base):
-        self.rut = str(rut)                     # texto, no número
-        self.nombre = nombre
-        self.fecha_ingreso = fecha_ingreso
-        self.sueldo_base = sueldo_base
-        self.registros = []                 # cardinalidad 1..*  ->  lista
-        self.departamento = None            # cardinalidad 0..1  ->  puede ser None
+from dominio import Persona
 
-    def registrar_hora(self, registro):
-        """Hace algo: cambia el estado del objeto."""
-        ...
 
-    def total_horas(self):
-        """Calcula y devuelve: no cambia nada."""
+class Empleado(Persona):
+    def __init__(self, id, fechaInicioContrato, salario):
+        self.id = int(id)
+        self.fechaInicioContrato = str(fechaInicioContrato)
+        self.salario = float(salario)
+
+    def getId():
+        "Contiene la id"
+
+    def getSalario():
+        "Contiene el salario"
+
+    def subirSalario(self, monto):
+        "Bool"
+
+    def actualizarDatosContacto(self, direccion, telefono):
+        "void"
+
+    
