@@ -2,7 +2,7 @@ class Empleado:
     """Un empleado de EcoTech. Registra su tiempo en proyectos."""
 
     def __init__(self, rut, nombre, fecha_ingreso, sueldo_base):
-        self.rut = rut                      # texto, no número
+        self.rut = str(rut)                     # texto, no número
         self.nombre = nombre
         self.fecha_ingreso = fecha_ingreso
         self.sueldo_base = sueldo_base
