@@ -139,4 +139,4 @@ print("El registro pertenece a:", registro.empleado.get_nombre())
 for entrada in empleado.listar_registros():
     print("Horas del empleado:", entrada.get_horas_trabajadas())
 
-print("hola")
+print("hola :)")
