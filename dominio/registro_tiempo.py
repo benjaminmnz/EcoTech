@@ -17,6 +17,8 @@ class RegistroTiempo:
 
         self.empleado = None
 
+        self.proyecto = None
+
     def get_id(self) -> int:
         return self.__id
 

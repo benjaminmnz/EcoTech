@@ -57,3 +57,9 @@ class CuentaUsuario:
         }
 
         return modulo in permisos[self._rol_acceso]
+
+    def get_contrasena_hash(self) -> str:
+        return self.__contrasena_hash
+
+    def get_rol_acceso(self) -> str:
+        return self._rol_acceso
