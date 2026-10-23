@@ -1,591 +1,420 @@
-from datetime import date
+"""Aplicación por consola de EcoTech. Ejecutar desde la carpeta del proyecto."""
+import argparse
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from getpass import getpass
-
-from dominio.empleado import Empleado
-from dominio.cuenta_usuario import CuentaUsuario
-from dominio.departamento import Departamento
-from dominio.proyecto import Proyecto
-from dominio.registro_tiempo import RegistroTiempo
+from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 
+from dominio.empleado import Empleado
+from dominio.proyecto import Proyecto
+from dominio.excepciones import EcoTechError
 from repositorio.conexion import obtener_conexion
-from dominio.excepciones import ConexionBaseDatosError
+from repositorio.sistema_repo import SistemaRepositorio
+from servicios import GestionEcoTech, autenticar, necesita_administrador, crear_administrador_inicial
 
-from repositorio.departamento_repo import DepartamentoRepositorio
-from dominio.excepciones import ErrorPersistencia
-from repositorio.empleado_repo import EmpleadoRepositorio
-from repositorio.cuenta_usuario_repo import CuentaUsuarioRepositorio
-from repositorio.proyecto_repo import ProyectoRepositorio
+
+def leer_texto(mensaje, predeterminado=None):
+    while True:
+        valor = input(mensaje).strip()
+        if valor:
+            return valor
+        if predeterminado is not None:
+            return predeterminado
+        print("Debes ingresar un valor.")
+
+
+def leer_id(mensaje, predeterminado=None, permitir_cero=False):
+    while True:
+        valor = input(mensaje).strip()
+        if not valor and predeterminado is not None:
+            return predeterminado
+        try:
+            numero = int(valor)
+            if numero > 0 or (permitir_cero and numero == 0):
+                return numero
+        except ValueError:
+            numero = None
+        print("Ingresa un identificador entero válido.")
+
+
+def leer_decimal(mensaje, predeterminado=None):
+    while True:
+        valor = input(mensaje).strip()
+        if not valor and predeterminado is not None:
+            return predeterminado
+        try:
+            numero = Decimal(valor.replace(",", "."))
+            if numero.is_finite() and numero > 0 and numero <= Decimal("9999999999.99"):
+                if numero == numero.quantize(Decimal("0.01")):
+                    return numero
+        except (InvalidOperation, ValueError):
+            numero = None
+        print("Ingresa un número positivo con hasta dos decimales, sin separadores de miles.")
+
+
+def leer_fecha(mensaje, predeterminado=None):
+    while True:
+        valor = input(mensaje).strip()
+        if not valor and predeterminado is not None:
+            return predeterminado
+        try:
+            return date.fromisoformat(valor)
+        except ValueError:
+            print("Usa una fecha válida con formato AAAA-MM-DD.")
+
+
+def confirmar(mensaje):
+    while True:
+        valor = input(mensaje + " [s/n]: ").strip().lower()
+        if valor in ("s", "si", "sí"):
+            return True
+        if valor in ("n", "no"):
+            return False
+        print("Responde s o n.")
+
+
+def leer_clave():
+    while True:
+        clave = getpass("Contraseña nueva (mínimo 8 caracteres): ")
+        if len(clave) < 8 or len(clave) > 1024:
+            print("La contraseña debe tener entre 8 y 1024 caracteres.")
+        elif clave != getpass("Repite la contraseña: "):
+            print("Las contraseñas no coinciden.")
+        else:
+            return clave
+
+
+def leer_rol():
+    while True:
+        opcion = input("Rol [1] empleado / [2] administrador: ").strip()
+        if opcion in ("1", "2"):
+            return "empleado" if opcion == "1" else "administrador"
+        print("Selecciona 1 o 2.")
+
+
+def intentar(operacion):
+    try:
+        operacion()
+    except (EcoTechError, ValueError, OSError) as error:
+        print("Operación rechazada:", error)
+    except psycopg.IntegrityError:
+        print("La operación se deshizo: hay datos duplicados o relaciones que deben conservarse.")
+    except psycopg.Error:
+        print("La operación no se confirmó. Revisa la conexión e intenta nuevamente.")
+
+
+def pedir_empleado(actual=None):
+    aviso = " [Enter conserva el valor]" if actual else ""
+    nombre = leer_texto("Nombre" + aviso + ": ", actual.nombre if actual else None)
+    direccion = leer_texto("Dirección" + aviso + ": ", actual.direccion if actual else None)
+    telefono = leer_texto("Teléfono" + aviso + ": ", actual.telefono if actual else None)
+    email = leer_texto("Correo" + aviso + ": ", actual.email if actual else None)
+    fecha = leer_fecha("Inicio de contrato AAAA-MM-DD" + aviso + ": ",
+                       actual.fecha_inicio_contrato if actual else None)
+    salario = leer_decimal("Salario" + aviso + ": ", actual.get_salario() if actual else None)
+    return Empleado(nombre, direccion, telefono, email,
+                    actual.get_id() if actual else 0, fecha, salario)
+
+
+def mostrar_departamentos(gestion):
+    print("\nID | Departamento | Gerente | Empleados")
+    for d in gestion.departamentos():
+        gerente = d.get_gerente()
+        print(d.get_id(), d.nombre, gerente.get_nombre() if gerente else "Sin asignar",
+              len(d.listar_empleados()), sep=" | ")
+
+
+def mostrar_empleados(gestion):
+    print("\nID | Nombre | Correo | Departamento | Salario")
+    for e in gestion.empleados():
+        print(e.get_id(), e.get_nombre(), e.email, e.departamento.nombre,
+              format(e.get_salario(), ".2f"), sep=" | ")
+
+
+def mostrar_proyectos(gestion):
+    print("\nID | Proyecto | Descripción | Inicio")
+    for p in gestion.proyectos():
+        print(p.get_id(), p.nombre, p.descripcion, p.fecha_inicio, sep=" | ")
+
+
+def mostrar_registros(gestion):
+    print("\nID | Fecha | Empleado | Proyecto | Horas | Tarea")
+    for r in gestion.registros():
+        print(r.get_id(), r.fecha, r.empleado.get_nombre(), r.proyecto.nombre,
+              r.get_horas_trabajadas(), r.descripcion_tarea, sep=" | ")
+
+
+def menu_departamentos(gestion):
+    while True:
+        print("\nDEPARTAMENTOS: 1 Listar / 2 Crear / 3 Renombrar / 4 Eliminar / 5 Gerente / 0 Volver")
+        opcion = input("Opción: ").strip()
+        if opcion == "0":
+            return
+        def accion():
+            if opcion == "1":
+                mostrar_departamentos(gestion)
+            elif opcion == "2":
+                nuevo = gestion.crear_departamento(leer_texto("Nombre: "))
+                print("Departamento creado. ID:", nuevo.get_id())
+            elif opcion == "3":
+                gestion.renombrar_departamento(leer_id("ID del departamento: "), leer_texto("Nombre nuevo: "))
+                print("Nombre actualizado.")
+            elif opcion == "4":
+                identificador = leer_id("ID del departamento: ")
+                if confirmar("¿Eliminar el departamento? Debe estar sin empleados"):
+                    gestion.eliminar_departamento(identificador)
+                    print("Departamento eliminado.")
+            elif opcion == "5":
+                departamento_id = leer_id("ID del departamento: ")
+                empleado_id = leer_id("ID del gerente (0 para quitarlo): ", permitir_cero=True)
+                gestion.asignar_gerente(departamento_id, empleado_id or None)
+                print("Gerente actualizado.")
+            else:
+                print("Opción inválida.")
+        intentar(accion)
+
+
+def menu_empleados(gestion):
+    while True:
+        print("\nEMPLEADOS: 1 Listar / 2 Crear / 3 Actualizar / 4 Eliminar / 5 Crear cuenta / 0 Volver")
+        opcion = input("Opción: ").strip()
+        if opcion == "0":
+            return
+        def accion():
+            if opcion == "1":
+                mostrar_empleados(gestion)
+            elif opcion == "2":
+                mostrar_departamentos(gestion)
+                departamento_id = leer_id("ID del departamento: ")
+                empleado = pedir_empleado()
+                usuario = clave = None
+                rol = "empleado"
+                if confirmar("¿Crear también su cuenta de acceso?"):
+                    usuario = leer_texto("Usuario: ")
+                    clave = leer_clave()
+                    rol = leer_rol()
+                guardado = gestion.crear_empleado(empleado, departamento_id, usuario, clave, rol)
+                print("Empleado guardado. ID:", guardado.get_id())
+            elif opcion == "3":
+                actual = gestion.obtener_empleado(leer_id("ID del empleado: "))
+                actualizado = pedir_empleado(actual)
+                departamento_id = leer_id("ID del departamento [Enter conserva]: ", actual.departamento.get_id())
+                gestion.actualizar_empleado(actualizado, departamento_id)
+                print("Empleado actualizado. Si era gerente, quita su designación antes de trasladarlo.")
+            elif opcion == "4":
+                identificador = leer_id("ID del empleado: ")
+                if confirmar("¿Eliminar empleado, cuenta y registros de tiempo asociados?"):
+                    gestion.eliminar_empleado(identificador)
+                    print("Empleado y datos dependientes eliminados.")
+            elif opcion == "5":
+                identificador = leer_id("ID del empleado: ")
+                usuario = leer_texto("Usuario: ")
+                clave = leer_clave()
+                cuenta = gestion.crear_cuenta(identificador, usuario, clave, leer_rol())
+                print("Cuenta creada:", cuenta.usuario)
+            else:
+                print("Opción inválida.")
+        intentar(accion)
+
+
+def menu_proyectos(gestion):
+    while True:
+        print("\nPROYECTOS: 1 Listar / 2 Crear / 3 Actualizar / 4 Eliminar / 5 Asignar empleado / 6 Quitar empleado / 0 Volver")
+        opcion = input("Opción: ").strip()
+        if opcion == "0":
+            return
+        def accion():
+            if opcion == "1":
+                mostrar_proyectos(gestion)
+            elif opcion == "2":
+                nombre = leer_texto("Nombre: ")
+                descripcion = leer_texto("Descripción: ")
+                fecha = leer_fecha("Inicio AAAA-MM-DD: ")
+                nuevo = gestion.crear_proyecto(Proyecto(0, nombre, descripcion, fecha))
+                print("Proyecto creado. ID:", nuevo.get_id())
+            elif opcion == "3":
+                identificador = leer_id("ID del proyecto: ")
+                actual = next((p for p in gestion.proyectos() if p.get_id() == identificador), None)
+                if actual is None:
+                    raise ValueError("El proyecto no existe")
+                nombre = leer_texto("Nombre [Enter conserva]: ", actual.nombre)
+                descripcion = leer_texto("Descripción [Enter conserva]: ", actual.descripcion)
+                fecha = leer_fecha("Inicio [Enter conserva]: ", actual.fecha_inicio)
+                gestion.actualizar_proyecto(Proyecto(identificador, nombre, descripcion, fecha))
+                print("Proyecto actualizado.")
+            elif opcion == "4":
+                identificador = leer_id("ID del proyecto: ")
+                if confirmar("¿Eliminar proyecto? No debe conservar registros de tiempo"):
+                    gestion.eliminar_proyecto(identificador)
+                    print("Proyecto eliminado.")
+            elif opcion in ("5", "6"):
+                proyecto_id = leer_id("ID del proyecto: ")
+                empleado_id = leer_id("ID del empleado: ")
+                gestion.asignar_proyecto(proyecto_id, empleado_id, quitar=opcion == "6")
+                print("Asignación actualizada.")
+            else:
+                print("Opción inválida.")
+        intentar(accion)
+
+
+def menu_registros(gestion):
+    while True:
+        print("\nHORAS: 1 Listar / 2 Registrar / 3 Corregir / 4 Eliminar / 0 Volver")
+        opcion = input("Opción: ").strip()
+        if opcion == "0":
+            return
+        def accion():
+            if opcion == "1":
+                mostrar_registros(gestion)
+            elif opcion == "2":
+                cuenta = gestion.cuenta_actual()
+                empleado_id = gestion.sesion.empleado_id
+                if cuenta.get_rol_acceso() == "administrador":
+                    empleado_id = leer_id("ID del empleado: ")
+                mostrar_proyectos(gestion)
+                proyecto_id = leer_id("ID del proyecto: ")
+                fecha = leer_fecha("Fecha AAAA-MM-DD: ")
+                horas = leer_decimal("Horas (mayor que 0 y máximo 24): ")
+                descripcion = leer_texto("Tarea: ")
+                registro = gestion.crear_registro(empleado_id, proyecto_id, fecha, horas, descripcion)
+                print("Registro guardado. ID:", registro.get_id())
+            elif opcion == "3":
+                identificador = leer_id("ID del registro: ")
+                actual = next((r for r in gestion.registros() if r.get_id() == identificador), None)
+                if actual is None:
+                    raise ValueError("El registro no existe o no pertenece a tu cuenta")
+                fecha = leer_fecha("Fecha [Enter conserva]: ", actual.fecha)
+                horas = leer_decimal("Horas [Enter conserva]: ", actual.get_horas_trabajadas())
+                descripcion = leer_texto("Tarea [Enter conserva]: ", actual.descripcion_tarea)
+                gestion.actualizar_registro(identificador, fecha, horas, descripcion)
+                print("Registro actualizado.")
+            elif opcion == "4":
+                identificador = leer_id("ID del registro: ")
+                if confirmar("¿Eliminar el registro?"):
+                    gestion.eliminar_registro(identificador)
+                    print("Registro eliminado.")
+            else:
+                print("Opción inválida.")
+        intentar(accion)
+
+
+def generar_informes(gestion):
+    from dominio.informe_pdf import InformePDF
+    from dominio.informe_excel import InformeExcel
+    departamentos, empleados, proyectos, registros = gestion.datos_informes()
+    opcion = input("Formato: 1 PDF / 2 Excel / 3 Ambos: ").strip()
+    if opcion not in ("1", "2", "3"):
+        raise ValueError("Selecciona 1, 2 o 3")
+    carpeta = Path(__file__).resolve().parent / "reportes"
+    marca = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid4().hex[:8]
+    informes = []
+    if opcion in ("1", "3"):
+        informes.append(InformePDF(1, empleados, proyectos, registros, carpeta / ("ecotech_" + marca + ".pdf")))
+    if opcion in ("2", "3"):
+        informes.append(InformeExcel(2, empleados, proyectos, registros, carpeta / ("ecotech_" + marca + ".xlsx")))
+    # Colección mixta: cada objeto ejecuta su propio generar(), sin inspeccionar su tipo.
+    for informe in informes:
+        informe.generar()
+        print("Informe generado:", informe.ruta_archivo)
+
+
+def configurar_administrador():
+    print("\nPRIMER ADMINISTRADOR")
+    print("No existe una cuenta administradora. Completa el registro inicial.")
+    if not confirmar("¿Crear el administrador inicial?"):
+        return False
+    nombre_departamento = leer_texto("Nombre del departamento inicial: ")
+    empleado = pedir_empleado()
+    usuario = leer_texto("Usuario administrador: ")
+    clave = leer_clave()
+    crear_administrador_inicial(empleado, nombre_departamento, usuario, clave)
+    print("Administrador creado. Ya puedes iniciar sesión.")
+    return True
+
 
 def iniciar_sesion():
-    for numero_intento in range(3):
-        usuario = input("Usuario: ").strip()
-        contrasena_ingresada = getpass("Contraseña: ")
-
-        try:
-            with obtener_conexion() as conexion:
-                repositorio = CuentaUsuarioRepositorio(conexion)
-
-                cuenta_encontrada = repositorio.obtener_por_usuario(
-                    usuario
-                )
-
-                empleado_id = None
-
-                if cuenta_encontrada is not None:
-                    if cuenta_encontrada.verificar_contrasena(
-                        contrasena_ingresada
-                    ):
-                        empleado_id = repositorio.obtener_empleado_id(
-                            cuenta_encontrada.get_id()
-                        )
-
-            if empleado_id is not None:
-                print("Inicio de sesión correcto.")
-                return cuenta_encontrada, empleado_id
-
-            print("Usuario o contraseña incorrectos.")
-
-        except (
-            ConexionBaseDatosError,
-            ErrorPersistencia,
-            ValueError
-        ) as error:
-            print("No se pudo iniciar sesión:", error)
-            return None
-
-        except psycopg.Error:
-            print("No se pudo consultar la cuenta.")
-            return None
-
-    print("Se agotaron los tres intentos.")
+    for _ in range(3):
+        usuario = leer_texto("Usuario: ")
+        clave = getpass("Contraseña: ")
+        sesion = autenticar(usuario, clave)
+        if sesion is not None:
+            return sesion
+        print("Usuario o contraseña incorrectos.")
+    print("Se agotaron los intentos de esta sesión.")
     return None
 
 
-# 1. CREAR EL EMPLEADO
-
-empleado = Empleado(
-    nombre="Ana Pérez",
-    direccion="Los Álamos 123",
-    telefono="912345678",
-    email="ana@example.com",
-    id_empleado=1,
-    fecha_inicio_contrato=date(2026, 10, 1),
-    salario=800000
-)
-
-print("Nombre:", empleado.get_nombre())
-print("ID:", empleado.get_id())
-print("Salario inicial:", empleado.get_salario())
-
-
-# 2. PROBAR LOS AUMENTOS DE SALARIO
-
-resultado = empleado.subir_salario(50000)
-
-print("¿Se realizó el aumento?", resultado)
-print("Salario actualizado:", empleado.get_salario())
-
-resultado = empleado.subir_salario(-10000)
-
-print("¿Se realizó el aumento negativo?", resultado)
-print("Salario después del intento:", empleado.get_salario())
-
-
-# 3. ACTUALIZAR LOS DATOS DE CONTACTO
-
-empleado.actualizar_datos_contacto(
-    direccion="Los Pinos 456",
-    telefono="987654321"
-)
-
-print("Nueva dirección:", empleado.direccion)
-print("Nuevo teléfono:", empleado.telefono)
-
-
-# 4. CREAR LA CUENTA Y ASIGNARLA AL EMPLEADO
-
-contrasena = getpass("Crea una contraseña de prueba: ")
-
-hash_generado = CuentaUsuario.generar_hash(contrasena)
-
-cuenta = CuentaUsuario(
-    id_cuenta=1,
-    usuario="ana",
-    contrasena_hash=hash_generado,
-    rol_acceso="empleado"
-)
-
-empleado.asignar_cuenta(cuenta)
-
-print("La cuenta fue asignada al empleado:", empleado.get_nombre())
-
-
-# 5. PROBAR LA CONTRASEÑA Y LOS PERMISOS
-
-intento = getpass("Ingresa nuevamente la contraseña: ")
-
-print("¿Contraseña correcta?", cuenta.verificar_contrasena(intento))
-print(
-    "¿Puede acceder a registro de tiempo?",
-    cuenta.autorizar("registro_tiempo")
-)
-print(
-    "¿Puede acceder a departamentos?",
-    cuenta.autorizar("departamentos")
-)
-
-
-# 6. CREAR EL DEPARTAMENTO Y ASIGNAR AL EMPLEADO
-
-departamento = Departamento(
-    id_departamento=1,
-    nombre="Desarrollo"
-)
-
-departamento.asignar_empleado(empleado)
-
-print("Departamento del empleado:", empleado.departamento.nombre)
-
-for integrante in departamento.listar_empleados():
-    print("Empleado del departamento:", integrante.get_nombre())
-
-
-# 7. ASIGNAR AL GERENTE
-
-departamento.asignar_gerente(empleado)
-
-gerente = departamento.get_gerente()
-
-print("Gerente del departamento:", gerente.get_nombre())
-
-
-# 8. CREAR LOS PROYECTOS Y ASIGNAR AL EMPLEADO
-
-proyecto_solar = Proyecto(
-    id_proyecto=1,
-    nombre="Paneles solares",
-    descripcion="Instalación de paneles solares",
-    fecha_inicio=date(2026, 10, 1)
-)
-
-proyecto_reciclaje = Proyecto(
-    id_proyecto=2,
-    nombre="Reciclaje",
-    descripcion="Mejora del proceso de reciclaje",
-    fecha_inicio=date(2026, 10, 15)
-)
-
-proyecto_solar.asignar_empleado(empleado)
-proyecto_reciclaje.asignar_empleado(empleado)
-
-for proyecto in [proyecto_solar, proyecto_reciclaje]:
-    print("Proyecto:", proyecto.nombre)
-
-    for integrante in proyecto.listar_empleados():
-        print("Empleado asignado:", integrante.get_nombre())
-
-
-# 9. CREAR EL REGISTRO DE TIEMPO
-
-registro = proyecto_solar.registrar_tiempo(
-    empleado=empleado,
-    id_registro=1,
-    fecha=date(2026, 10, 22),
-    horas=4.5,
-    descripcion="Instalación de paneles solares"
-)
-
-print("ID del registro:", registro.get_id())
-print("Horas registradas:", registro.get_horas_trabajadas())
-
-
-# 10. PROBAR EL RECHAZO DE HORAS INVÁLIDAS
-
-try:
-    registro.registrar(-2)
-except ValueError as error:
-    print("Registro rechazado:", error)
-
-print(
-    "Horas después del intento inválido:",
-    registro.get_horas_trabajadas()
-)
-
-
-# 11. ASOCIAR EL REGISTRO: PRIMERO AL EMPLEADO Y DESPUÉS AL PROYECTO
-
-
-print("El registro pertenece a:", registro.empleado.get_nombre())
-print("Proyecto del registro:", registro.proyecto.nombre)
-
-
-# 12. CONSULTAR LOS REGISTROS DEL EMPLEADO Y EL TOTAL DEL PROYECTO
-
-for entrada in empleado.listar_registros():
-    print("Horas del empleado:", entrada.get_horas_trabajadas())
-
-print("Proyecto:", proyecto_solar.nombre)
-print("Horas totales:", proyecto_solar.calcular_horas_totales())
-
-try:
-    with obtener_conexion() as conexion:
-        repositorio = DepartamentoRepositorio(conexion)
-
-        # Crear.
-        nuevo = repositorio.crear("Prueba CRUD")
-        id_prueba = nuevo.get_id()
-        print("CREAR:", id_prueba, nuevo.nombre)
-
-        # Consultar.
-        encontrado = repositorio.obtener_por_id(id_prueba)
-
-        if encontrado is None:
-            raise ValueError("No se recuperó el departamento creado")
-
-        print("CONSULTAR:", encontrado.nombre)
-
-        # Actualizar.
-        actualizado = repositorio.actualizar(
-            id_prueba,
-            "Prueba actualizada"
-        )
-        print("ACTUALIZAR:", actualizado.nombre)
-
-        # Listar.
-        departamentos = repositorio.listar()
-        print("LISTAR: cantidad =", len(departamentos))
-
-        # Eliminar únicamente el departamento de esta prueba.
-        eliminado = repositorio.eliminar(id_prueba)
-        print("ELIMINAR:", eliminado)
-
-        # Comprobar que ya no existe.
-        comprobacion = repositorio.obtener_por_id(id_prueba)
-        print("CONSULTA DESPUÉS DE ELIMINAR:", comprobacion)
-
-    print("Prueba CRUD confirmada correctamente.")
-
-except (ConexionBaseDatosError, ErrorPersistencia, ValueError) as error:
-    print("Error:", error)
-
-except psycopg.Error:
-    print("No se pudo completar o confirmar la transacción.")
-
-try:
-    with obtener_conexion() as conexion:
-        departamentos_repo = DepartamentoRepositorio(conexion)
-        empleados_repo = EmpleadoRepositorio(conexion)
-
-        # Crear un departamento exclusivo para esta prueba.
-        departamento_prueba = departamentos_repo.crear(
-            "Departamento de prueba de empleados"
-        )
-
-        # Guardar los datos del empleado.
-        guardado = empleados_repo.crear(
-            empleado,
-            departamento_prueba.get_id()
-        )
-
-        id_prueba = guardado.get_id()
-
-        print("CREAR EMPLEADO:", id_prueba, guardado.get_nombre())
-
-        # Recuperar el empleado.
-        encontrado = empleados_repo.obtener_por_id(id_prueba)
-
-        if encontrado is None:
-            raise ValueError("No se recuperó el empleado creado")
-
-        print("CONSULTAR EMPLEADO:", encontrado.get_nombre())
-        print("DEPARTAMENTO:", encontrado.departamento.nombre)
-
-        # Modificar y guardar el contacto.
-        encontrado.actualizar_datos_contacto(
-            "Dirección de prueba 123",
-            "911111111"
-        )
-
-        actualizado = empleados_repo.actualizar(
-            encontrado,
-            departamento_prueba.get_id()
-        )
-
-        print("ACTUALIZAR EMPLEADO:", actualizado.direccion)
-
-        # Listar.
-        empleados_bd = empleados_repo.listar()
-        print("LISTAR EMPLEADOS: cantidad =", len(empleados_bd))
-
-        # Eliminar únicamente los datos creados en esta prueba.
-        eliminado = empleados_repo.eliminar(id_prueba)
-        print("ELIMINAR EMPLEADO:", eliminado)
-
-        comprobacion = empleados_repo.obtener_por_id(id_prueba)
-        print("CONSULTA DESPUÉS DE ELIMINAR:", comprobacion)
-
-        departamentos_repo.eliminar(departamento_prueba.get_id())
-
-    print("Prueba CRUD de empleados confirmada.")
-
-except (ConexionBaseDatosError, ErrorPersistencia, ValueError) as error:
-    print("Error:", error)
-
-except psycopg.Error:
-    print("No se pudo completar o confirmar la transacción.")
-
-try:
-    with obtener_conexion() as conexion:
-        repositorio = DepartamentoRepositorio(conexion)
-
-        control = repositorio.crear("Control de prueba SQL")
-
-        payload = "' OR '1'='1"
-        departamento_payload = repositorio.crear(payload)
-
-        resultados = repositorio.buscar_por_nombre(payload)
-
-        encontro_payload = False
-
-        for resultado in resultados:
-            if resultado.nombre != payload:
-                raise ValueError(
-                    "La búsqueda devolvió un departamento que no corresponde"
-                )
-
-            if resultado.get_id() == departamento_payload.get_id():
-                encontro_payload = True
-
-        if not encontro_payload:
-            raise ValueError("No se recuperó el texto de prueba")
-
-        # Eliminar solamente las dos filas creadas por esta prueba.
-        repositorio.eliminar(departamento_payload.get_id())
-        repositorio.eliminar(control.get_id())
-
-    print("PRUEBA SQL: superada.")
-    print("El payload se trató como texto.")
-    print("La búsqueda no devolvió departamentos con otros nombres.")
-
-except (ConexionBaseDatosError, ErrorPersistencia, ValueError) as error:
-    print("Prueba SQL fallida:", error)
-
-except psycopg.Error:
-    print("No se pudo completar la prueba SQL.")
-
-id_departamento_prueba = None
-fallo_esperado = False
-
-try:
-    with obtener_conexion() as conexion:
-        departamentos_repo = DepartamentoRepositorio(conexion)
-        empleados_repo = EmpleadoRepositorio(conexion)
-
-        # Primera escritura: crear un departamento.
-        departamento_prueba = departamentos_repo.crear(
-            "Departamento temporal para rollback"
-        )
-
-        id_departamento_prueba = departamento_prueba.get_id()
-
-        # Buscar un identificador de departamento que no exista.
-        id_inexistente = id_departamento_prueba + 1
-
-        while departamentos_repo.obtener_por_id(id_inexistente) is not None:
-            id_inexistente += 1
-
-        print("Departamento insertado, todavía sin confirmar.")
-
-        # Segunda escritura: intentar guardar un empleado
-        # asociado a un departamento inexistente.
-        empleados_repo.crear(
-            empleado,
-            id_inexistente
-        )
-
-        # Si inesperadamente funcionara, también deshacemos la prueba.
-        raise ValueError(
-            "No ocurrió el fallo esperado; se cancela la prueba"
-        )
-
-except ErrorPersistencia as error:
-    fallo_esperado = isinstance(
-        error.__cause__,
-        psycopg.errors.ForeignKeyViolation
-    )
-    print("Operación rechazada:", error)
-
-except (ConexionBaseDatosError, ValueError) as error:
-    print("No se completó la prueba:", error)
-
-except psycopg.Error:
-    print("La prueba tuvo un problema de conexión o transacción.")
-
-
-# Comprobar desde una conexión nueva que la primera escritura se deshizo.
-if fallo_esperado and id_departamento_prueba is not None:
-    try:
-        with obtener_conexion() as conexion:
-            repositorio = DepartamentoRepositorio(conexion)
-
-            comprobacion = repositorio.obtener_por_id(
-                id_departamento_prueba
-            )
-
-        if comprobacion is None:
-            print("ROLLBACK: superado.")
-            print("El departamento temporal no quedó guardado.")
+def menu_principal(gestion):
+    while True:
+        cuenta = gestion.cuenta_actual()
+        administrador = cuenta.get_rol_acceso() == "administrador"
+        print("\nEcoTech |", cuenta.usuario, "|", cuenta.get_rol_acceso())
+        if administrador:
+            print("1 Departamentos / 2 Empleados / 3 Proyectos / 4 Horas / 5 Informes / 6 Contraseña / 0 Salir")
         else:
-            print("ROLLBACK: fallido. El departamento sigue guardado.")
+            print("3 Mis proyectos / 4 Mis horas / 6 Contraseña / 0 Salir")
+        opcion = input("Opción: ").strip()
+        if opcion == "0":
+            return
+        def accion():
+            if opcion == "1" and administrador:
+                menu_departamentos(gestion)
+            elif opcion == "2" and administrador:
+                menu_empleados(gestion)
+            elif opcion == "3":
+                menu_proyectos(gestion) if administrador else mostrar_proyectos(gestion)
+            elif opcion == "4":
+                menu_registros(gestion)
+            elif opcion == "5" and administrador:
+                generar_informes(gestion)
+            elif opcion == "6":
+                actual = getpass("Contraseña actual: ")
+                nueva = leer_clave()
+                gestion.cambiar_contrasena(actual, nueva)
+                print("Contraseña actualizada.")
+            else:
+                print("Opción inválida o no autorizada.")
+        intentar(accion)
 
-    except (ConexionBaseDatosError, ErrorPersistencia, ValueError) as error:
-        print("No se pudo verificar el rollback:", error)
 
+def main():
+    parser = argparse.ArgumentParser(description="Sistema EcoTech por consola")
+    grupo = parser.add_mutually_exclusive_group()
+    grupo.add_argument("--inicializar", action="store_true", help="Crear el esquema en una base nueva")
+    grupo.add_argument("--verificar", action="store_true", help="Pruebas locales y de BD con rollback")
+    grupo.add_argument("--verificar-local", action="store_true", help="Pruebas sin conexión a BD")
+    args = parser.parse_args()
+    try:
+        if args.verificar or args.verificar_local:
+            from verificaciones import ejecutar_verificaciones
+            return ejecutar_verificaciones(solo_local=args.verificar_local)
+        with obtener_conexion() as conexion:
+            sistema = SistemaRepositorio(conexion)
+            if args.inicializar:
+                creado = sistema.inicializar()
+                print("Esquema creado." if creado else "El esquema ya existe y está disponible.")
+                return 0
+            sistema.comprobar_esquema()
+        if necesita_administrador() and not configurar_administrador():
+            return 0
+        sesion = iniciar_sesion()
+        if sesion is None:
+            return 0
+        menu_principal(GestionEcoTech(sesion))
+        return 0
+    except (EOFError, KeyboardInterrupt):
+        print("\nSesión finalizada.")
+        return 0
+    except (EcoTechError, ValueError, OSError) as error:
+        print("No se pudo continuar:", error)
+        return 1
     except psycopg.Error:
-        print("Falló la consulta de verificación.")
+        print("No se pudo completar la operación de base de datos. Revisa la conexión.")
+        return 1
 
-try:
-    with obtener_conexion() as conexion:
-        departamentos_repo = DepartamentoRepositorio(conexion)
-        empleados_repo = EmpleadoRepositorio(conexion)
-        cuentas_repo = CuentaUsuarioRepositorio(conexion)
 
-        departamento_prueba = departamentos_repo.crear(
-            "Departamento de prueba de cuentas"
-        )
-
-        empleado_guardado = empleados_repo.crear(
-            empleado,
-            departamento_prueba.get_id()
-        )
-
-        # Usamos el ID generado para obtener un usuario de prueba distinto.
-        usuario_prueba = "prueba_" + str(empleado_guardado.get_id())
-
-        cuenta_prueba = CuentaUsuario(
-            id_cuenta=1,
-            usuario=usuario_prueba,
-            contrasena_hash=cuenta.get_contrasena_hash(),
-            rol_acceso="empleado"
-        )
-
-        cuenta_guardada = cuentas_repo.crear(
-            cuenta_prueba,
-            empleado_guardado.get_id()
-        )
-
-    print("Empleado y cuenta guardados en la misma transacción.")
-
-    # Recuperar desde una conexión nueva.
-    with obtener_conexion() as conexion:
-        cuentas_repo = CuentaUsuarioRepositorio(conexion)
-
-        recuperada = cuentas_repo.obtener_por_usuario(
-            cuenta_guardada.usuario
-        )
-
-        if recuperada is None:
-            raise ValueError("No se recuperó la cuenta guardada")
-
-        empleado_id = cuentas_repo.obtener_empleado_id(
-            recuperada.get_id()
-        )
-
-    print("Usuario recuperado:", recuperada.usuario)
-    print("Empleado asociado:", empleado_id)
-    print(
-        "¿Verifica la contraseña original?",
-        recuperada.verificar_contrasena(contrasena)
-    )
-
-except (ConexionBaseDatosError, ErrorPersistencia, ValueError) as error:
-    print("Error:", error)
-
-except psycopg.Error:
-    print("No se pudo completar la operación en la base de datos.")
-
-print("\nPRUEBA DE INICIO DE SESIÓN")
-
-sesion = iniciar_sesion()
-
-if sesion is not None:
-    cuenta_activa, empleado_activo_id = sesion
-
-    print("Usuario conectado:", cuenta_activa.usuario)
-    print("Rol:", cuenta_activa.get_rol_acceso())
-    print("ID del empleado:", empleado_activo_id)
-else:
-    print("No se inició una sesión.")
-
-try:
-    with obtener_conexion() as conexion:
-        departamentos_repo = DepartamentoRepositorio(conexion)
-        empleados_repo = EmpleadoRepositorio(conexion)
-        proyectos_repo = ProyectoRepositorio(conexion)
-
-        departamento_prueba = departamentos_repo.crear(
-            "Departamento de prueba de proyectos"
-        )
-
-        empleado_prueba = empleados_repo.crear(
-            empleado,
-            departamento_prueba.get_id()
-        )
-
-        proyecto_guardado = proyectos_repo.crear(proyecto_solar)
-
-        print("PROYECTO CREADO:", proyecto_guardado.nombre)
-
-        encontrado = proyectos_repo.obtener_por_id(
-            proyecto_guardado.get_id()
-        )
-
-        if encontrado is None:
-            raise ValueError("No se recuperó el proyecto")
-
-        print("PROYECTO CONSULTADO:", encontrado.nombre)
-
-        encontrado.nombre = "Proyecto actualizado de prueba"
-        actualizado = proyectos_repo.actualizar(encontrado)
-
-        print("PROYECTO ACTUALIZADO:", actualizado.nombre)
-
-        proyectos_repo.asignar_empleado(
-            proyecto_guardado.get_id(),
-            empleado_prueba.get_id()
-        )
-
-        ids_asignados = proyectos_repo.listar_ids_empleados(
-            proyecto_guardado.get_id()
-        )
-
-        if empleado_prueba.get_id() not in ids_asignados:
-            raise ValueError("La asignación no se guardó")
-
-        print("ASIGNACIÓN: correcta")
-        print("PROYECTOS GUARDADOS:", len(proyectos_repo.listar()))
-
-        # Limpiar únicamente los datos creados por esta prueba.
-        proyectos_repo.quitar_empleado(
-            proyecto_guardado.get_id(),
-            empleado_prueba.get_id()
-        )
-
-        eliminado = proyectos_repo.eliminar(
-            proyecto_guardado.get_id()
-        )
-
-        print("PROYECTO ELIMINADO:", eliminado)
-
-        empleados_repo.eliminar(empleado_prueba.get_id())
-        departamentos_repo.eliminar(departamento_prueba.get_id())
-
-    print("Prueba de proyectos confirmada.")
-
-except (ConexionBaseDatosError, ErrorPersistencia, ValueError) as error:
-    print("Error:", error)
-
-except psycopg.Error:
-    print("No se pudo completar o confirmar la prueba.")
+if __name__ == "__main__":
+    raise SystemExit(main())

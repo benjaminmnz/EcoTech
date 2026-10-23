@@ -179,7 +179,7 @@ class EmpleadoRepositorio:
             email=fila[4],
             id_empleado=fila[0],
             fecha_inicio_contrato=fila[5],
-            salario=float(fila[6])
+            salario=fila[6]
         )
 
         departamento = Departamento(

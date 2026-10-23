@@ -141,3 +141,21 @@ class DepartamentoRepositorio:
             )
 
         return departamentos
+    def asignar_gerente(self, departamento_id, empleado_id):
+        filas = self._ejecutar(
+            """
+            UPDATE ecotech.departamento
+            SET gerente_id = %s
+            WHERE id = %s
+            RETURNING id, nombre
+            """,
+            (empleado_id, departamento_id)
+        )
+        if not filas:
+            raise ValueError("El departamento no existe")
+        return self._fila_a_departamento(filas[0])
+
+    def listar_gerentes(self):
+        return self._ejecutar(
+            "SELECT id, gerente_id FROM ecotech.departamento ORDER BY id"
+        )

@@ -149,3 +149,21 @@ class ProyectoRepositorio:
             descripcion=fila[2],
             fecha_inicio=fila[3]
         )
+
+    def listar_asignaciones(self):
+        return self._ejecutar(
+            "SELECT proyecto_id, empleado_id FROM ecotech.empleado_proyecto ORDER BY proyecto_id, empleado_id"
+        )
+
+    def listar_por_empleado(self, empleado_id):
+        filas = self._ejecutar(
+            """
+            SELECT p.id, p.nombre, p.descripcion, p.fecha_inicio
+            FROM ecotech.proyecto AS p
+            JOIN ecotech.empleado_proyecto AS ep ON ep.proyecto_id = p.id
+            WHERE ep.empleado_id = %s
+            ORDER BY p.id
+            """,
+            (empleado_id,)
+        )
+        return [self._fila_a_proyecto(fila) for fila in filas]

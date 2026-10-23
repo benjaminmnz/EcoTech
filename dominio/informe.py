@@ -57,6 +57,7 @@ class Informe(ABC):
                 registro.get_id(),
                 registro.fecha.isoformat(),
                 nombre_empleado,
+                registro.proyecto.nombre if registro.proyecto is not None else "Sin asignar",
                 registro.get_horas_trabajadas(),
                 registro.descripcion_tarea
             ])
@@ -64,7 +65,7 @@ class Informe(ABC):
         return [
             ("Empleados", ["ID", "Nombre", "Departamento", "Salario"], filas_empleados),
             ("Proyectos", ["ID", "Nombre", "Fecha de inicio", "Horas totales"], filas_proyectos),
-            ("Registros", ["ID", "Fecha", "Empleado", "Horas", "Tarea"], filas_registros)
+            ("Registros", ["ID", "Fecha", "Empleado", "Proyecto", "Horas", "Tarea"], filas_registros)
         ]
 
     @abstractmethod

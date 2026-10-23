@@ -100,3 +100,26 @@ class CuentaUsuarioRepositorio:
             contrasena_hash=fila[2],
             rol_acceso=fila[3]
         )
+
+    def listar_con_empleado(self):
+        filas = self._ejecutar(
+            """
+            SELECT id, usuario, contrasena_hash, rol_acceso, empleado_id
+            FROM ecotech.cuenta_usuario
+            ORDER BY id
+            """
+        )
+        return [(self._fila_a_cuenta(fila), fila[4]) for fila in filas]
+
+    def actualizar_hash(self, cuenta_id, nuevo_hash):
+        filas = self._ejecutar(
+            """
+            UPDATE ecotech.cuenta_usuario
+            SET contrasena_hash = %s
+            WHERE id = %s
+            RETURNING id
+            """,
+            (nuevo_hash, cuenta_id)
+        )
+        if not filas:
+            raise ValueError("La cuenta ya no existe")
