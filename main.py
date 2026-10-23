@@ -89,7 +89,8 @@ def leer_clave():
 
 def leer_rol():
     while True:
-        opcion = input("Rol [1] empleado / [2] administrador: ").strip()
+        mostrar_menu("ROL DE LA CUENTA", [("1", "Empleado"), ("2", "Administrador")])
+        opcion = input("Opción: ").strip()
         if opcion in ("1", "2"):
             return "empleado" if opcion == "1" else "administrador"
         print("Selecciona 1 o 2.")
@@ -119,37 +120,82 @@ def pedir_empleado(actual=None):
                     actual.get_id() if actual else 0, fecha, salario)
 
 
+def mostrar_menu(titulo, opciones):
+    print("\n" + "=" * 40)
+    print(titulo)
+    print("=" * 40)
+    for numero, descripcion in opciones:
+        print(f"{numero}. {descripcion}")
+    print("-" * 40)
+
+
+def mostrar_ficha(titulo, campos):
+    print("\n" + titulo)
+    print("-" * 40)
+    for etiqueta, valor in campos:
+        print(f"{etiqueta}: {valor}")
+
+
 def mostrar_departamentos(gestion):
-    print("\nID | Departamento | Gerente | Empleados")
-    for d in gestion.departamentos():
+    departamentos = gestion.departamentos()
+    print("\nDEPARTAMENTOS REGISTRADOS")
+    if not departamentos:
+        print("No hay departamentos para mostrar.")
+    for d in departamentos:
         gerente = d.get_gerente()
-        print(d.get_id(), d.nombre, gerente.get_nombre() if gerente else "Sin asignar",
-              len(d.listar_empleados()), sep=" | ")
+        mostrar_ficha(f"Departamento #{d.get_id()}", [
+            ("Nombre", d.nombre),
+            ("Gerente", gerente.get_nombre() if gerente else "Sin asignar"),
+            ("Cantidad de empleados", len(d.listar_empleados()))
+        ])
 
 
 def mostrar_empleados(gestion):
-    print("\nID | Nombre | Correo | Departamento | Salario")
-    for e in gestion.empleados():
-        print(e.get_id(), e.get_nombre(), e.email, e.departamento.nombre,
-              format(e.get_salario(), ".2f"), sep=" | ")
+    empleados = gestion.empleados()
+    print("\nEMPLEADOS REGISTRADOS")
+    if not empleados:
+        print("No hay empleados para mostrar.")
+    for e in empleados:
+        mostrar_ficha(f"Empleado #{e.get_id()}", [
+            ("Nombre", e.get_nombre()),
+            ("Correo", e.email),
+            ("Departamento", e.departamento.nombre),
+            ("Salario", format(e.get_salario(), ".2f"))
+        ])
 
 
 def mostrar_proyectos(gestion):
-    print("\nID | Proyecto | Descripción | Inicio")
-    for p in gestion.proyectos():
-        print(p.get_id(), p.nombre, p.descripcion, p.fecha_inicio, sep=" | ")
+    proyectos = gestion.proyectos()
+    print("\nPROYECTOS DISPONIBLES")
+    if not proyectos:
+        print("No hay proyectos para mostrar.")
+    for p in proyectos:
+        mostrar_ficha(f"Proyecto #{p.get_id()}", [
+            ("Nombre", p.nombre),
+            ("Descripción", p.descripcion),
+            ("Fecha de inicio", p.fecha_inicio)
+        ])
 
 
 def mostrar_registros(gestion):
-    print("\nID | Fecha | Empleado | Proyecto | Horas | Tarea")
-    for r in gestion.registros():
-        print(r.get_id(), r.fecha, r.empleado.get_nombre(), r.proyecto.nombre,
-              r.get_horas_trabajadas(), r.descripcion_tarea, sep=" | ")
+    registros = gestion.registros()
+    print("\nREGISTROS DE HORAS")
+    if not registros:
+        print("No hay registros de horas para mostrar.")
+    for r in registros:
+        mostrar_ficha(f"Registro #{r.get_id()}", [
+            ("Fecha", r.fecha),
+            ("Empleado", r.empleado.get_nombre()),
+            ("Proyecto", r.proyecto.nombre),
+            ("Horas", format(r.get_horas_trabajadas(), ".2f")),
+            ("Tarea", r.descripcion_tarea)
+        ])
 
 
 def menu_departamentos(gestion):
     while True:
-        print("\nDEPARTAMENTOS: 1 Listar / 2 Crear / 3 Renombrar / 4 Eliminar / 5 Gerente / 0 Volver")
+        mostrar_menu("DEPARTAMENTOS", [("1", "Listar"), ("2", "Crear"), ("3", "Renombrar"),
+                                       ("4", "Eliminar"), ("5", "Asignar o quitar gerente"), ("0", "Volver")])
         opcion = input("Opción: ").strip()
         if opcion == "0":
             return
@@ -179,7 +225,8 @@ def menu_departamentos(gestion):
 
 def menu_empleados(gestion):
     while True:
-        print("\nEMPLEADOS: 1 Listar / 2 Crear / 3 Actualizar / 4 Eliminar / 5 Crear cuenta / 0 Volver")
+        mostrar_menu("EMPLEADOS", [("1", "Listar"), ("2", "Crear"), ("3", "Actualizar"),
+                                   ("4", "Eliminar"), ("5", "Crear cuenta"), ("0", "Volver")])
         opcion = input("Opción: ").strip()
         if opcion == "0":
             return
@@ -222,7 +269,9 @@ def menu_empleados(gestion):
 
 def menu_proyectos(gestion):
     while True:
-        print("\nPROYECTOS: 1 Listar / 2 Crear / 3 Actualizar / 4 Eliminar / 5 Asignar empleado / 6 Quitar empleado / 0 Volver")
+        mostrar_menu("PROYECTOS", [("1", "Listar"), ("2", "Crear"), ("3", "Actualizar"),
+                                   ("4", "Eliminar"), ("5", "Asignar empleado"),
+                                   ("6", "Quitar empleado"), ("0", "Volver")])
         opcion = input("Opción: ").strip()
         if opcion == "0":
             return
@@ -262,7 +311,8 @@ def menu_proyectos(gestion):
 
 def menu_registros(gestion):
     while True:
-        print("\nHORAS: 1 Listar / 2 Registrar / 3 Corregir / 4 Eliminar / 0 Volver")
+        mostrar_menu("HORAS", [("1", "Listar"), ("2", "Registrar"), ("3", "Corregir"),
+                               ("4", "Eliminar"), ("0", "Volver")])
         opcion = input("Opción: ").strip()
         if opcion == "0":
             return
@@ -305,7 +355,8 @@ def generar_informes(gestion):
     from dominio.informe_pdf import InformePDF
     from dominio.informe_excel import InformeExcel
     departamentos, empleados, proyectos, registros = gestion.datos_informes()
-    opcion = input("Formato: 1 PDF / 2 Excel / 3 Ambos: ").strip()
+    mostrar_menu("FORMATO DEL INFORME", [("1", "PDF"), ("2", "Excel"), ("3", "Ambos")])
+    opcion = input("Opción: ").strip()
     if opcion not in ("1", "2", "3"):
         raise ValueError("Selecciona 1, 2 o 3")
     carpeta = Path(__file__).resolve().parent / "reportes"
@@ -351,11 +402,13 @@ def menu_principal(gestion):
     while True:
         cuenta = gestion.cuenta_actual()
         administrador = cuenta.get_rol_acceso() == "administrador"
-        print("\nEcoTech |", cuenta.usuario, "|", cuenta.get_rol_acceso())
+        mostrar_ficha("EcoTech", [("Usuario", cuenta.usuario), ("Rol", cuenta.get_rol_acceso())])
         if administrador:
-            print("1 Departamentos / 2 Empleados / 3 Proyectos / 4 Horas / 5 Informes / 6 Contraseña / 0 Salir")
+            opciones = [("1", "Departamentos"), ("2", "Empleados"), ("3", "Proyectos"),
+                        ("4", "Horas"), ("5", "Informes"), ("6", "Contraseña"), ("0", "Salir")]
         else:
-            print("3 Mis proyectos / 4 Mis horas / 6 Contraseña / 0 Salir")
+            opciones = [("3", "Mis proyectos"), ("4", "Mis horas"), ("6", "Contraseña"), ("0", "Salir")]
+        mostrar_menu("MENÚ PRINCIPAL", opciones)
         opcion = input("Opción: ").strip()
         if opcion == "0":
             return
